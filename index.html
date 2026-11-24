@@ -221,6 +221,8 @@ body.alarm{animation:flash .7s steps(1) infinite}
     <h3>감지 민감도</h3>
     <label class="set"><span>엎드림·자리 비움 판단까지 <b class="num" id="downV"></b>초</span><input type="range" id="downR" min="3" max="30"></label>
     <label class="set"><span>휴대폰 판단까지 <b class="num" id="phoneV"></b>초</span><input type="range" id="phoneR" min="1" max="10"></label>
+    <label class="set"><span>휴대폰 감지 민감도 <b class="num" id="psV"></b> / 10</span><input type="range" id="psR" min="1" max="10"></label>
+    <p class="note">검정·흰색 단색 폰이 잘 안 잡히면 민감도를 올리세요. 책이나 필통을 폰으로 착각하면 내리세요. "화면 보기"를 켜면 아래에 휴대폰으로 보이는 정도(%)가 표시돼요.</p>
     <label class="set"><span>경보 음량 <b class="num" id="volV"></b>%</span><input type="range" id="volR" min="10" max="100"></label>
     <h3>기록</h3>
     <p class="note">기록은 이 기기의 브라우저에만 저장돼요. 다른 브라우저나 기기와는 공유되지 않아요.</p>
@@ -287,28 +289,29 @@ function paint(){const L=db.log[dk(new Date())]||{};
   $('#startBtn').textContent=running?'공부 끝내기':'공부 시작';$('#startBtn').className='btn '+(running?'stop':'go')}
 
 /* ---------- siren ---------- */
+try{if(navigator.audioSession)navigator.audioSession.type='playback'}catch(e){}
 let testing=false,ac=null,siren=null,vibT=null;
 const hap=document.createElement('label');hap.className='hap';hap.setAttribute('aria-hidden','true');hap.innerHTML='<input type="checkbox" switch tabindex="-1">';document.body.appendChild(hap);
 function buzz(){if(navigator.vibrate){navigator.vibrate([450,150]);return}let k=0;const f=()=>{try{hap.click()}catch(e){}if(++k<5)setTimeout(f,70)};f()}
 const mode=()=>db.settings.alarmMode||'siren';
-function sirenOn(){if(mode()==='vibe'){if(!vibT){buzz();vibT=setInterval(buzz,650)}return}if(!ac||siren)return;const t=ac.currentTime,out=ac.createGain(),comp=ac.createDynamicsCompressor();
-  out.gain.setValueAtTime(0,t);out.gain.linearRampToValueAtTime(muted?0:db.settings.vol/100*.9,t+.08);
-  const lfo=ac.createOscillator(),depth=ac.createGain();lfo.type='triangle';lfo.frequency.value=1.6;depth.gain.value=450;lfo.connect(depth);
-  const oscs=[['sawtooth',950,0],['square',950,14],['sawtooth',1900,-8]].map(([ty,f,de])=>{const o=ac.createOscillator(),g=ac.createGain();o.type=ty;o.frequency.value=f;o.detune.value=de;
-    depth.connect(o.frequency);g.gain.value=ty==='square'?.35:(f>1000?.2:.5);o.connect(g).connect(out);o.start(t);return o});
-  /* 빠른 떨림(워블)을 얹어 긴급 사이렌처럼 */
-  const wob=ac.createOscillator(),wd=ac.createGain();wob.frequency.value=7;wd.gain.value=90;wob.connect(wd);oscs.forEach(o=>wd.connect(o.frequency));wob.start(t);oscs.push(wob);
-  out.connect(comp).connect(ac.destination);lfo.start(t);siren={out,oscs,lfo};
-  if(mode()==='both'&&!vibT){buzz();vibT=setInterval(buzz,650)}}
-function sirenOff(){if(vibT){clearInterval(vibT);vibT=null;navigator.vibrate&&navigator.vibrate(0)}if(!siren)return;const t=ac.currentTime,s=siren;siren=null;s.out.gain.cancelScheduledValues(t);s.out.gain.setValueAtTime(s.out.gain.value,t);s.out.gain.linearRampToValueAtTime(0,t+.1);
-  [...s.oscs,s.lfo].forEach(o=>{try{o.stop(t+.15)}catch(e){}});if(vibT){clearInterval(vibT);vibT=null;navigator.vibrate&&navigator.vibrate(0)}}
-function alarm(on){if(testing)return;on?sirenOn():sirenOff();if(siren&&ac)siren.out.gain.setTargetAtTime(muted?0:db.settings.vol/100*.9,ac.currentTime,.05)}
+/* 재난문자식 경보: 높은 두 음을 겹친 날카로운 소리, 2초 길게 + 0.5초 짧게 두 번 반복 */
+function sirenOn(){if(mode()!=='siren'&&!vibT){buzz();vibT=setInterval(buzz,650)}if(mode()==='vibe')return;if(!ac||siren)return;
+  const t=ac.currentTime,out=ac.createGain(),gate=ac.createGain(),comp=ac.createDynamicsCompressor();
+  out.gain.value=muted?0:db.settings.vol/100;gate.gain.value=0;comp.threshold.value=-6;comp.ratio.value=4;
+  const oscs=[['sine',1706,.5],['sine',1920,.5],['square',1706,.12],['square',1920,.12],['sine',3412,.08]].map(([ty,f,g])=>{const o=ac.createOscillator(),gg=ac.createGain();o.type=ty;o.frequency.value=f;gg.gain.value=g;o.connect(gg).connect(gate);o.start(t);return o});
+  gate.connect(out).connect(comp).connect(ac.destination);
+  const on=(a,b)=>{gate.gain.setTargetAtTime(1,a,.004);gate.gain.setTargetAtTime(0,b,.004)};
+  let next=t+.02;const sched=()=>{while(next<ac.currentTime+1.5){on(next,next+2);on(next+2.5,next+3);on(next+3.5,next+4);next+=4.5}};sched();
+  siren={out,gate,oscs,timer:setInterval(sched,400)}}
+function sirenOff(){if(vibT){clearInterval(vibT);vibT=null;navigator.vibrate&&navigator.vibrate(0)}if(!siren)return;const t=ac.currentTime,s=siren;siren=null;clearInterval(s.timer);
+  s.gate.gain.cancelScheduledValues(t);s.gate.gain.setTargetAtTime(0,t,.01);s.oscs.forEach(o=>{try{o.stop(t+.1)}catch(e){}})}
+function alarm(on){if(testing)return;on?sirenOn():sirenOff();if(siren&&ac)siren.out.gain.setTargetAtTime(muted?0:db.settings.vol/100,ac.currentTime,.05)}
 $('#muteBtn').onclick=()=>{muted=!muted;$('#muteBtn').textContent=muted?'경보 소리 꺼짐':'경보 소리 켜짐'};
 
 /* ---------- camera + detection ---------- */
 const MP='https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
 const FACE='https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite';
-const OBJ='https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite';
+const OBJS=['https://huggingface.co/litert-community/MediaPipe-ObjectDetector-EfficientDet-Lite2/resolve/main/efficientdet_lite2_float16.tflite','https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite2/float16/latest/efficientdet_lite2.tflite','https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite'];
 let camTried=false,faceDet=null,objDet=null,detT=null;
 const video=$('#video');
 function useDemo(msg){demo=true;$('#demo').classList.add('on');$('#camMsg').textContent=msg;raw='study'}
@@ -321,14 +324,19 @@ async function startCam(){camTried=true;
   $('#camMsg').textContent='감지 모델을 불러오는 중…';
   try{const v=await import(MP+'/vision_bundle.mjs');const fs=await v.FilesetResolver.forVisionTasks(MP+'/wasm');
     faceDet=await make(v.FaceDetector,fs,{runningMode:'VIDEO',minDetectionConfidence:.5},FACE);
-    objDet=await make(v.ObjectDetector,fs,{runningMode:'VIDEO',scoreThreshold:.35,maxResults:6,categoryAllowlist:['person','cell phone']},OBJ)}
+    for(const u of OBJS){try{objDet=await make(v.ObjectDetector,fs,{runningMode:'VIDEO',scoreThreshold:.12,maxResults:10,categoryAllowlist:['person','cell phone']},u);break}catch(e){}}
+    if(!objDet)throw new Error('model')}
   catch(e){useDemo('감지 모델을 받지 못했어요(인터넷 연결 확인). 체험 모드로 바꿨어요.');return}
   $('#camMsg').textContent='';$('#camTag').hidden=false;$('#cam').classList.add('live');
   detT=setInterval(detect,450)}
 function detect(){if(!faceDet||video.readyState<2)return;const t=performance.now();
-  try{const f=faceDet.detectForVideo(video,t).detections.length>0;const o=objDet.detectForVideo(video,t).detections.map(d=>d.categories[0].categoryName);
-    raw=o.includes('cell phone')?'phone':f?'study':o.includes('person')?'down':'away';
-    $('#camTag').textContent=(f?'얼굴 ✓':'얼굴 ✕')+(o.includes('cell phone')?' · 휴대폰 감지':'')}catch(e){}}
+  try{const f=faceDet.detectForVideo(video,t).detections.length>0;const ds=objDet.detectForVideo(video,t).detections.map(d=>d.categories[0]);
+    const best=n=>Math.max(0,...ds.filter(c=>c.categoryName===n).map(c=>c.score));
+    const ph=best('cell phone'),pe=best('person'),th=phoneTh();
+    raw=ph>=th?'phone':f?'study':pe>=.4?'down':'away';
+    $('#camTag').textContent=(f?'얼굴 ✓':'얼굴 ✕')+(ph>=th?' · 휴대폰 감지':ph>=.1?` · 휴대폰? ${Math.round(ph*100)}%`:'')}catch(e){}}
+/* 민감도 1~10 → 판정 기준 점수 (높을수록 단색 폰도 잘 잡지만 비슷한 물건을 폰으로 착각할 수 있음) */
+const phoneTh=()=>.45-(db.settings.phoneSens||7)*.03;
 $('#peekBtn').onclick=()=>{const h=$('#cam').classList.toggle('hid');$('#peekBtn').textContent=h?'화면 보기':'화면 숨기기'};
 document.querySelectorAll('[data-sim]').forEach(b=>b.onclick=()=>{raw=b.dataset.sim});
 
@@ -407,7 +415,7 @@ function renderSettings(){const s=db.settings;
   $('#subjList').querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{const x=db.subjects.splice(b.dataset.del,1)[0];if(subject===x)subject=db.subjects[0]||null;save();renderSettings()});
   document.querySelectorAll('#modeSeg button').forEach(b=>{b.setAttribute('aria-pressed',b.dataset.m===mode());b.onclick=()=>{s.alarmMode=b.dataset.m;save();renderSettings()}});
   $('#testBtn').onclick=()=>{try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();ac.resume()}catch(e){}testing=true;sirenOff();sirenOn();document.body.classList.add('alarm');setTimeout(()=>{sirenOff();testing=false;document.body.classList.remove('alarm')},2000)};
-  [['down','downSec'],['phone','phoneSec'],['vol','vol']].forEach(([id,k])=>{const r=$('#'+id+'R');r.value=s[k];$('#'+id+'V').textContent=s[k];r.oninput=()=>{s[k]=+r.value;$('#'+id+'V').textContent=r.value;save()}})}
+  (s.phoneSens=s.phoneSens||7,[['down','downSec'],['phone','phoneSec'],['ps','phoneSens'],['vol','vol']]).forEach(([id,k])=>{const r=$('#'+id+'R');r.value=s[k];$('#'+id+'V').textContent=s[k];r.oninput=()=>{s[k]=+r.value;$('#'+id+'V').textContent=r.value;save()}})}
 $('#subjForm').onsubmit=e=>{e.preventDefault();const v=$('#subjIn').value.trim();if(!v||db.subjects.includes(v))return;db.subjects.push(v);if(!subject)subject=v;$('#subjIn').value='';save();renderSettings()};
 $('#copyBtn').onclick=async()=>{try{await navigator.clipboard.writeText(ser());$('#setMsg').textContent='기록을 클립보드에 복사했어요.'}catch(e){$('#setMsg').textContent='복사가 막혀 있어요.'}};
 let wipeArm=false;
